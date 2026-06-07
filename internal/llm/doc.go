@@ -1,7 +1,7 @@
 // Package llm 封装 LLM（大语言模型）客户端，统一不同 API 的调用方式。
 //
 // 支持三种提供商：
-//   - OpenAI 格式（GPT-4o、DeepSeek、通义千问等，都走同一个 API 格式）
+//   - OpenAI 格式（GPT-4o、DeepSeek、通义千问、GLM 等，都走同一个 API 格式）
 //   - Claude 格式（Anthropic Messages API）
 //   - Ollama 格式（本地模型）
 //
