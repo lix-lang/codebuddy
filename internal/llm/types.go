@@ -23,6 +23,7 @@ type Message struct {
 	Name       string     `json:"name,omitempty"`
 }
 
+// AI返回工具调用
 type ToolCall struct {
 	ID       string `json:"id"`
 	Function struct {
@@ -31,8 +32,16 @@ type ToolCall struct {
 	}
 }
 
+// 输入输出token
 type Usage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
+}
+
+// 流式相应的chunk_id
+type ToolCallChunk struct {
+	ID           string
+	FunctionName string
+	Arguments    string
 }
