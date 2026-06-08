@@ -57,10 +57,16 @@ func (t *RunCommandTool) Validate(args map[string]any) error {
 func (t *RunCommandTool) Execute(ctx context.Context, args map[string]any) (*ToolResult, error) {
 	command, _ := args["command"].(string)
 
-	// exec.Command 创建一个命令执行对象
+	// 设置超时：30 秒
+	// context.WithTimeout 在 ctx 的基础上创建一个 30 秒后自动取消的 context
+	// cancel() 用来手动释放资源，用 defer 确保函数结束时一定执行
+	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	// exec.CommandContext 创建一个带超时控制的命令执行对象
 	// "bash" 是执行的程序，"-c" 表示后面的字符串是命令内容
-	// 比如 exec.Command("bash", "-c", "go test ./...") 等于在终端运行 go test ./...
-	cmd := exec.CommandContext(ctx, "bash", "-c", command)
+	// 比如 exec.CommandContext(ctx, "bash", "-c", "go test ./...")
+	cmd := exec.CommandContext(timeoutCtx, "bash", "-c", command)
 
 	// 设置工作目录为项目根目录
 	cmd.Dir = t.rootDir
@@ -70,15 +76,6 @@ func (t *RunCommandTool) Execute(ctx context.Context, args map[string]any) (*Too
 	// cmd.Stdout 把命令的标准输出重定向到 stdout 缓冲区
 	cmd.Stdout = &stdout
 	// cmd.Stderr 把命令的错误输出重定向到 stderr 缓冲区
-	cmd.Stderr = &stderr
-
-	// 设置超时：30 秒
-	// context.WithTimeout 在 30 秒后自动取消命令
-	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel() // defer 延迟调用，函数结束时释放资源
-	cmd = exec.CommandContext(timeoutCtx, "bash", "-c", command)
-	cmd.Dir = t.rootDir
-	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
 	// cmd.Run 执行命令并等待完成
