@@ -13,10 +13,13 @@ import (
 // EditFileTool edit_file 工具，精确替换文件中的内容
 // 跟 write_file 的区别：write_file 覆盖整个文件，edit_file 只替换指定部分
 type EditFileTool struct {
-	rootDir   string
+	// rootDir 项目根目录，用于路径校验和拼接绝对路径
+	rootDir string
+	// backupMgr 备份管理器，编辑文件前自动备份
 	backupMgr *security.BackupManager
 }
 
+// NewEditFileTool 创建 edit_file 工具
 func NewEditFileTool(rootDir string, backupMgr *security.BackupManager) *EditFileTool {
 	return &EditFileTool{
 		rootDir:   rootDir,
@@ -24,15 +27,18 @@ func NewEditFileTool(rootDir string, backupMgr *security.BackupManager) *EditFil
 	}
 }
 
+// Name 返回工具名（实现 Tool 接口）
 func (t *EditFileTool) Name() string {
 	return "edit_file"
 }
 
+// Description 返回工具描述（实现 Tool 接口）
 func (t *EditFileTool) Description() string {
 	return "精确替换文件中的指定内容。需要用户确认后才会执行。用于修改代码的一部分而不是重写整个文件。"
 }
 
-// Parameters 三个参数：path + old_string + new_string
+// Parameters 返回参数定义（实现 Tool 接口）
+// 三个参数：path + old_string + new_string
 // old_string 是要被替换的原文本，new_string 是替换后的新文本
 func (t *EditFileTool) Parameters() map[string]any {
 	return map[string]any{
@@ -55,6 +61,7 @@ func (t *EditFileTool) Parameters() map[string]any {
 	}
 }
 
+// Validate 校验参数（实现 Tool 接口）
 func (t *EditFileTool) Validate(args map[string]any) error {
 	// 三个必填参数都要检查
 	for _, key := range []string{"path", "old_string", "new_string"} {
@@ -76,6 +83,7 @@ func (t *EditFileTool) Validate(args map[string]any) error {
 	return security.IsSubPath(t.rootDir, path)
 }
 
+// Execute 执行编辑文件（实现 Tool 接口）
 func (t *EditFileTool) Execute(ctx context.Context, args map[string]any) (*ToolResult, error) {
 	path, _ := args["path"].(string)
 	oldString, _ := args["old_string"].(string)

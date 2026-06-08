@@ -24,14 +24,14 @@ var dangerousPatterns = []string{
 // sensitiveFiles 敏感文件黑名单
 // 这些文件即使路径合法也不允许读取
 var sensitiveFiles = []string{
-	".env",
-	".ssh",
-	"credentials",
-	".pem",
-	".key",
-	".p12",
-	"id_rsa",
-	"id_ed25519",
+	".env",        // 环境变量文件，通常包含数据库密码、API Key 等
+	".ssh",        // SSH 配置目录，包含私钥和已知主机列表
+	"credentials", // 凭证文件，如 AWS credentials、服务账号密钥
+	".pem",        // PEM 格式的证书/私钥文件
+	".key",        // 密钥文件，用于加密解密或身份认证
+	".p12",        // PKCS#12 格式的证书文件，包含私钥和证书链
+	"id_rsa",      // RSA 格式的 SSH 私钥
+	"id_ed25519",  // Ed25519 格式的 SSH 私钥（更现代的加密算法）
 }
 
 // CheckCommand 检查命令是否安全

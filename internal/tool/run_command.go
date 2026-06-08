@@ -12,21 +12,26 @@ import (
 
 // RunCommandTool run_command 工具，执行 shell 命令
 type RunCommandTool struct {
+	// rootDir 项目根目录，作为命令执行的工作目录
 	rootDir string
 }
 
+// NewRunCommandTool 创建 run_command 工具
 func NewRunCommandTool(rootDir string) *RunCommandTool {
 	return &RunCommandTool{rootDir: rootDir}
 }
 
+// Name 返回工具名（实现 Tool 接口）
 func (t *RunCommandTool) Name() string {
 	return "run_command"
 }
 
+// Description 返回工具描述（实现 Tool 接口）
 func (t *RunCommandTool) Description() string {
 	return "执行 shell 命令。需要用户确认后才会执行。用于运行测试、编译、安装依赖等操作。"
 }
 
+// Parameters 返回参数定义（实现 Tool 接口）
 func (t *RunCommandTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
@@ -40,6 +45,7 @@ func (t *RunCommandTool) Parameters() map[string]any {
 	}
 }
 
+// Validate 校验参数（实现 Tool 接口）
 func (t *RunCommandTool) Validate(args map[string]any) error {
 	cmdVal, ok := args["command"]
 	if !ok {
@@ -54,6 +60,7 @@ func (t *RunCommandTool) Validate(args map[string]any) error {
 	return security.CheckCommand(cmd)
 }
 
+// Execute 执行 shell 命令（实现 Tool 接口）
 func (t *RunCommandTool) Execute(ctx context.Context, args map[string]any) (*ToolResult, error) {
 	command, _ := args["command"].(string)
 

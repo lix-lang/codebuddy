@@ -25,11 +25,11 @@ type Message struct {
 
 // ToolCall AI 发起的一次工具调用
 type ToolCall struct {
-	ID       string   `json:"id"` // 调用 ID，用来把工具结果对应回去
-	Function struct { // 匿名嵌套结构体
+	ID       string `json:"id"` // 调用 ID，用来把工具结果对应回去
+	Function struct {
 		Name      string `json:"name"`      // 工具名，如 "read_file"
 		Arguments string `json:"arguments"` // 工具参数，JSON 字符串，如 '{"path":"main.go"}'
-	}
+	} // 匿名嵌套结构体，描述被调用的函数名和参数
 }
 
 // Usage 每次 API 调用的 token 消耗统计

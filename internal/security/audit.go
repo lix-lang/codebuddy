@@ -27,6 +27,8 @@ type AuditLogger struct {
 // NewAuditLogger 创建审计日志记录器
 // rootDir 是项目根目录，日志文件存放在 rootDir/.codebuddy/audit.log
 func NewAuditLogger(rootDir string) *AuditLogger {
+	// rootDir 是项目根目录，日志文件存放在 rootDir/.codebuddy/audit.log
+
 	return &AuditLogger{
 		logFile: filepath.Join(rootDir, ".codebuddy", "audit.log"),
 	}
@@ -36,8 +38,10 @@ func NewAuditLogger(rootDir string) *AuditLogger {
 // 采用 JSON Lines 格式（每行一个 JSON），方便用 grep/jq 筛选
 // 调用方式：logger.Log(AuditEntry{Tool: "write_file", Args: "main.go", Result: "success"})
 func (al *AuditLogger) Log(entry AuditEntry) error {
+	// entry 是要记录的审计日志条目，包含工具名、参数、结果等信息
+
 	// 确保日志目录存在
-	logDir := filepath.Dir(al.logFile)
+	logDir := filepath.Dir(al.logFile) // logDir 是日志文件所在的目录路径
 	// os.MkdirAll 递归创建目录，不存在的层级都创建，已存在不报错
 	if err := os.MkdirAll(logDir, os.ModePerm); err != nil {
 		return fmt.Errorf("创建日志目录失败: %w", err)
@@ -50,7 +54,7 @@ func (al *AuditLogger) Log(entry AuditEntry) error {
 	}
 
 	// json.Marshal 把结构体转成 JSON 字节流（json.Unmarshal 的反操作）
-	data, err := json.Marshal(entry)
+	data, err := json.Marshal(entry) // data 是序列化后的 JSON 字节流
 	if err != nil {
 		return fmt.Errorf("序列化日志失败: %w", err)
 	}

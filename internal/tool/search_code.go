@@ -13,6 +13,7 @@ import (
 
 // SearchCodeTool search_code 工具，搜索代码内容
 type SearchCodeTool struct {
+	// rootDir 项目根目录，用于路径校验和拼接绝对路径
 	rootDir string
 }
 
@@ -21,14 +22,17 @@ func NewSearchCodeTool(rootDir string) *SearchCodeTool {
 	return &SearchCodeTool{rootDir: rootDir}
 }
 
+// Name 返回工具名（实现 Tool 接口）
 func (t *SearchCodeTool) Name() string {
 	return "search_code"
 }
 
+// Description 返回工具描述（实现 Tool 接口）
 func (t *SearchCodeTool) Description() string {
 	return "在项目代码中搜索包含指定关键词的文件和行。当用户想查找某个函数、变量或关键词时使用。"
 }
 
+// Parameters 返回参数定义（实现 Tool 接口）
 func (t *SearchCodeTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
@@ -48,6 +52,7 @@ func (t *SearchCodeTool) Parameters() map[string]any {
 	}
 }
 
+// Validate 校验参数（实现 Tool 接口）
 func (t *SearchCodeTool) Validate(args map[string]any) error {
 	// query 是必填参数
 	queryVal, ok := args["query"]
@@ -75,6 +80,7 @@ type searchResult struct {
 	Content string // 匹配的行内容
 }
 
+// Execute 执行搜索代码（实现 Tool 接口）
 func (t *SearchCodeTool) Execute(ctx context.Context, args map[string]any) (*ToolResult, error) {
 	query, _ := args["query"].(string)
 	searchPath := "."
@@ -139,6 +145,7 @@ func (t *SearchCodeTool) Execute(ctx context.Context, args map[string]any) (*Too
 	return &ToolResult{Output: output, IsError: false}, nil
 }
 
+// IsDestructive 标记为只读工具（实现 Tool 接口）
 func (t *SearchCodeTool) IsDestructive() bool {
 	return false
 }

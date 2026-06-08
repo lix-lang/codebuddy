@@ -8,6 +8,7 @@ import (
 // Validate 校验配置是否合法
 // 在 Load 之后调用，确保必填字段有值、格式正确
 // 返回 nil 表示合法，返回 error 表示哪个字段有问题
+// cfg: 需要校验的配置对象指针，通常由 Load 函数返回
 func Validate(cfg *Config) error {
 	// 1. LLM 必填字段检查
 	// provider 和 model 是必须填的，不然不知道用哪个 LLM

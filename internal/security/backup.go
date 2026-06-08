@@ -21,8 +21,11 @@ type BackupManager struct {
 // NewBackupManager 创建备份管理器
 // rootDir 是项目根目录，maxKeep 是最大保留备份数（默认 10）
 func NewBackupManager(rootDir string, maxKeep int) *BackupManager {
+	// rootDir 是项目根目录，备份文件存放在其下的 .codebuddy/backup/ 子目录
+	// maxKeep 是最大保留备份数量，超过时自动清理最旧的备份
+
 	if maxKeep <= 0 {
-		maxKeep = 10
+		maxKeep = 10 // 默认保留 10 份备份
 	}
 	return &BackupManager{
 		rootDir: rootDir,
@@ -34,8 +37,10 @@ func NewBackupManager(rootDir string, maxKeep int) *BackupManager {
 // 把原文件复制到 .codebuddy/backup/YYYYMMDD_HHMMSS_文件名
 // 返回备份文件的完整路径
 func (bm *BackupManager) Backup(filePath string) (string, error) {
+	// filePath 是要备份的源文件路径
+
 	// os.ReadFile 读取原文件全部内容到 []byte
-	data, err := os.ReadFile(filePath)
+	data, err := os.ReadFile(filePath) // data 是原文件的字节内容
 	if err != nil {
 		return "", fmt.Errorf("读取文件失败: %w", err)
 	}
@@ -52,11 +57,11 @@ func (bm *BackupManager) Backup(filePath string) (string, error) {
 	// 生成备份文件名：20240101_150405_main.go
 	// time.Now().Format 按指定格式输出当前时间字符串
 	// Go 的时间格式必须用 "2006-01-02 15:04:05" 这个固定基准时间
-	timestamp := time.Now().Format("20060102_150405")
+	timestamp := time.Now().Format("20060102_150405") // timestamp 是备份文件名中的时间戳部分
 	// filepath.Base 取路径的最后一部分（文件名）
 	// 比如 "/Users/app/main.go" → "main.go"
-	backupName := fmt.Sprintf("%s_%s", timestamp, filepath.Base(filePath))
-	backupPath := filepath.Join(backupDir, backupName)
+	backupName := fmt.Sprintf("%s_%s", timestamp, filepath.Base(filePath)) // backupName 是拼接后的备份文件名
+	backupPath := filepath.Join(backupDir, backupName)                     // backupPath 是备份文件的完整路径
 
 	// 把原文件内容写入备份文件
 	// 0644 是文件权限：用户可读写，其他用户只读
@@ -70,9 +75,11 @@ func (bm *BackupManager) Backup(filePath string) (string, error) {
 // Restore 从最近的备份恢复文件
 // 找到该文件的最新备份，覆盖当前文件
 func (bm *BackupManager) Restore(filePath string) error {
-	backupDir := filepath.Join(bm.rootDir, ".codebuddy", "backup")
+	// filePath 是要恢复的目标文件路径
+
+	backupDir := filepath.Join(bm.rootDir, ".codebuddy", "backup") // backupDir 是备份文件存放目录
 	// filepath.Base 取文件名，用来匹配对应的备份文件
-	fileName := filepath.Base(filePath)
+	fileName := filepath.Base(filePath) // fileName 是文件的基础名称，用于匹配备份
 
 	// os.ReadDir 读取目录下的所有文件和子目录
 	entries, err := os.ReadDir(backupDir)
@@ -81,8 +88,8 @@ func (bm *BackupManager) Restore(filePath string) error {
 	}
 
 	// 找到匹配该文件名的所有备份
-	var backups []string
-	for _, entry := range entries {
+	var backups []string // backups 收集所有匹配该文件名的备份文件名
+	for _, entry := range entries { // entry 是备份目录中的每个文件项
 		// strings.HasSuffix 检查字符串是否以指定后缀结尾
 		// 比如 "20240101_150405_main.go" 以 "_main.go" 结尾
 		if strings.HasSuffix(entry.Name(), "_"+fileName) {
@@ -102,8 +109,8 @@ func (bm *BackupManager) Restore(filePath string) error {
 	sort.Sort(sort.Reverse(sort.StringSlice(backups)))
 
 	// 读取最新备份的内容（backups[0] 是最新的）
-	latestBackup := filepath.Join(backupDir, backups[0])
-	data, err := os.ReadFile(latestBackup)
+	latestBackup := filepath.Join(backupDir, backups[0]) // latestBackup 是最新备份文件的完整路径
+	data, err := os.ReadFile(latestBackup)                // data 是最新备份的文件内容
 	if err != nil {
 		return fmt.Errorf("读取备份文件失败: %w", err)
 	}
@@ -118,8 +125,10 @@ func (bm *BackupManager) Restore(filePath string) error {
 
 // Clean 清理旧备份，只保留最近 maxKeep 份
 func (bm *BackupManager) Clean() error {
-	backupDir := filepath.Join(bm.rootDir, ".codebuddy", "backup")
-	entries, err := os.ReadDir(backupDir)
+	// 清理旧备份，保留最近 maxKeep 份，删除更早的备份
+
+	backupDir := filepath.Join(bm.rootDir, ".codebuddy", "backup") // backupDir 是备份文件存放目录
+	entries, err := os.ReadDir(backupDir)                          // entries 是备份目录中的所有文件项
 	if err != nil {
 		// 备份目录不存在，不需要清理
 		return nil
@@ -132,9 +141,9 @@ func (bm *BackupManager) Clean() error {
 
 	// 如果备份数量超过 maxKeep，删除多余的（从最旧的开始删）
 	if len(entries) > bm.maxKeep {
-		deleteCount := len(entries) - bm.maxKeep
+		deleteCount := len(entries) - bm.maxKeep // deleteCount 是需要删除的备份数量
 		for i := 0; i < deleteCount; i++ {
-			deletePath := filepath.Join(backupDir, entries[i].Name())
+			deletePath := filepath.Join(backupDir, entries[i].Name()) // deletePath 是要删除的备份文件的完整路径
 			// os.Remove 删除一个文件
 			if err := os.Remove(deletePath); err != nil {
 				return fmt.Errorf("清理备份失败: %w", err)

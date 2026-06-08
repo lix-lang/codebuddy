@@ -2,60 +2,35 @@ package context
 
 import (
 	"fmt"
-	"sync"
 
 	"github.com/lix-lang/codebuddy/internal/llm"
-	"github.com/pkoukk/tiktoken-go"
 )
-
-// tokenEncoder 全局的 tiktoken 编码器（单例，只初始化一次）
-// tiktoken 是 OpenAI 开源的 BPE 分词器，能精确计算 token 数
-// 不同模型用不同的编码方式：
-//   - GPT-4 / GPT-4o / GPT-3.5-turbo → "cl100k_base"
-//   - GLM / DeepSeek（兼容 OpenAI 格式）→ 也用 "cl100k_base"，误差很小
-//   - Claude → 有自己的分词器，但 cl100k_base 的结果也很接近
-var (
-	encoder     *tiktoken.Tiktoken
-	encoderOnce sync.Once // sync.Once 确保只初始化一次
-)
-
-// getEncoder 获取 tiktoken 编码器（懒加载，第一次调用时才初始化）
-func getEncoder() *tiktoken.Tiktoken {
-	// sync.Once.Do 保证里面的函数只执行一次，即使多个 goroutine 同时调用
-	// 后续调用直接返回已初始化的 encoder，不再重复执行
-	encoderOnce.Do(func() {
-		var err error
-		// tiktoken.EncodingForModel 根据模型名自动选择对应的编码方式
-		// 如果模型名不认识，回退到 "cl100k_base"（GPT-4 使用的编码）
-		encoder, err = tiktoken.EncodingForModel("gpt-4")
-		if err != nil {
-			// 回退到 cl100k_base 编码（适用于大多数 OpenAI 兼容模型）
-			encoder, _ = tiktoken.GetEncoding("cl100k_base")
-		}
-	})
-	return encoder
-}
 
 // CountMessagesToken 精确计算一组消息的 token 数
-// 使用 tiktoken BPE 分词器，跟模型实际计算方式一致
+// 使用模型原生的分词器计算，每个模型用自己的分词器：
+//   - OpenAI → tiktoken（原生分词器）
+//   - Qwen → qwen-tokenizer（专用库）
+//   - GLM/DeepSeek → HuggingFace tokenizer.json
+//
+// model 是模型名，如 "glm-4"、"gpt-4o"，用来选择对应的分词器
 //
 // 每条消息的开销包括：
-//   - 消息内容的 token 数（精确计算）
+//   - 消息内容的 token 数（用对应模型的分词器精确计算）
 //   - 消息格式的固定开销（角色标签、分隔符等，约 4 token/条）
 //   - 工具调用的 token 数（函数名 + 参数）
-func CountMessagesToken(messages []llm.Message) int {
-	enc := getEncoder()
+func CountMessagesToken(model string, messages []llm.Message) int {
+	// GetTokenCounter 根据模型名选择对应的分词器（带缓存）
+	counter := GetTokenCounter(model)
 	total := 0
 
 	for _, msg := range messages {
-		// 精确计算消息内容的 token 数
-		// enc.Encode 把文本拆成 token 列表，len 就是 token 数量
-		total += len(enc.Encode(msg.Content, nil, nil))
+		// 用模型原生的分词器精确计算消息内容的 token 数
+		total += counter.CountTokens(msg.Content)
 
 		// 工具调用的 token 数
-		for _, tc := range msg.ToolCalls {
-			total += len(enc.Encode(tc.Function.Name, nil, nil))
-			total += len(enc.Encode(tc.Function.Arguments, nil, nil))
+		for _, toolCall := range msg.ToolCalls {
+			total += counter.CountTokens(toolCall.Function.Name)
+			total += counter.CountTokens(toolCall.Function.Arguments)
 		}
 
 		// 每条消息的格式开销（OpenAI API 格式的额外 token）
@@ -68,9 +43,11 @@ func CountMessagesToken(messages []llm.Message) int {
 
 // CountTextToken 精确计算纯文本的 token 数
 // 用于计算文件内容、system prompt 等的 token 消耗
-func CountTextToken(text string) int {
-	enc := getEncoder()
-	return len(enc.Encode(text, nil, nil))
+//
+// model 是模型名，用来选择对应的分词器
+func CountTextToken(model string, text string) int {
+	tc := GetTokenCounter(model)
+	return tc.CountTokens(text)
 }
 
 // EstimateMessagesToken 估算一组消息的 token 数（快速但不够精确）

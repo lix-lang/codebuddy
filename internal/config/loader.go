@@ -28,6 +28,7 @@ const DefaultConfigFile = "config.json"
 func Load(projectDir string) (*Config, error) {
 	// 1. 获取用户主目录，拼接全局配置路径 ~/.codebuddy/config.json
 	// os.UserHomeDir() 返回当前用户的主目录路径，如 "/Users/lixiaoyang"
+	// homeDir: 当前用户的主目录路径，用于拼接全局配置文件路径
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("获取用户目录失败: %w", err)
@@ -38,6 +39,7 @@ func Load(projectDir string) (*Config, error) {
 
 	// 2. 尝试加载全局配置
 	// os.Stat(path) 获取文件信息，err == nil 表示文件存在，err != nil 表示不存在
+	// cfg: 最终返回的配置对象，先用零值初始化，后续逐步填充
 	cfg := &Config{}
 	if _, err := os.Stat(globalPath); err == nil {
 		cfg, err = loadFromFile(globalPath)
@@ -48,8 +50,10 @@ func Load(projectDir string) (*Config, error) {
 	}
 
 	// 3. 尝试加载项目级配置，存在的话覆盖全局配置的同名字段
+	// projectPath: 项目级配置文件的完整路径，如 "/path/to/project/.codebuddy/config.json"
 	projectPath := filepath.Join(projectDir, DefaultConfigDir, DefaultConfigFile)
 	if _, err := os.Stat(projectPath); err == nil {
+		// projectCfg: 从项目级配置文件解析出的配置，非零值字段将覆盖全局配置
 		projectCfg, err := loadFromFile(projectPath)
 		if err != nil {
 			return nil, fmt.Errorf("加载项目配置失败: %w", err)
@@ -65,6 +69,7 @@ func Load(projectDir string) (*Config, error) {
 
 // loadFromFile 读取并解析单个 JSON 配置文件
 // 内部函数，只被 Load 调用
+// path: JSON 配置文件的完整路径
 func loadFromFile(path string) (*Config, error) {
 	// os.ReadFile(path) 读取整个文件，返回 []byte（文件的原始字节内容）
 	data, err := os.ReadFile(path)
@@ -74,6 +79,7 @@ func loadFromFile(path string) (*Config, error) {
 
 	// json.Unmarshal 把 JSON 字节流自动映射到 Go 结构体
 	// 映射规则靠结构体的 json tag，比如 `json:"provider"` 对应 JSON 里的 "provider" 字段
+	// cfg: 解析结果会写入这个局部变量
 	var cfg Config
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("解析 JSON 失败: %w", err)
@@ -88,6 +94,8 @@ func loadFromFile(path string) (*Config, error) {
 //
 //	全局设了 model=gpt-4o，项目设了 model=glm-4 → 用 glm-4
 func mergeConfig(base, override *Config) {
+	// base: 全局配置，作为被覆盖的底座
+	// override: 项目级配置，非零值字段会覆盖 base 中的同名字段
 	// LLM 配置
 	if override.LLM.Provider != "" {
 		base.LLM.Provider = override.LLM.Provider
@@ -130,6 +138,7 @@ func mergeConfig(base, override *Config) {
 // expandEnv 替换配置中可能包含环境变量占位符的字段
 // 只替换完全匹配 "${VAR}" 格式的字符串，不影响普通字符串
 // 比如 APIKey 写的是 "${OPENAI_API_KEY}"，会被替换成真实的环境变量值
+// cfg: 指向需要做环境变量插值的配置对象，会直接修改其字段值
 func expandEnv(cfg *Config) {
 	cfg.LLM.APIKey = expandEnvString(cfg.LLM.APIKey)
 	cfg.LLM.BaseURL = expandEnvString(cfg.LLM.BaseURL)
@@ -138,6 +147,7 @@ func expandEnv(cfg *Config) {
 
 // expandEnvString 替换单个字符串中的环境变量
 // 只处理 "${VAR}" 格式，其他字符串原样返回
+// s: 待检查的字符串，可能是 "${VAR_NAME}" 格式的环境变量占位符
 func expandEnvString(s string) string {
 	// strings.HasPrefix 检查字符串是否以指定前缀开头
 	// strings.HasSuffix 检查字符串是否以指定后缀结尾

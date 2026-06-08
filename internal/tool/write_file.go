@@ -11,6 +11,7 @@ import (
 
 // WriteFileTool write_file 工具，创建或覆盖文件
 type WriteFileTool struct {
+	// rootDir 项目根目录，用于路径校验和拼接绝对路径
 	rootDir string
 	// backupMgr 备份管理器，写文件前自动备份
 	backupMgr *security.BackupManager
@@ -24,15 +25,18 @@ func NewWriteFileTool(rootDir string, backupMgr *security.BackupManager) *WriteF
 	}
 }
 
+// Name 返回工具名（实现 Tool 接口）
 func (t *WriteFileTool) Name() string {
 	return "write_file"
 }
 
+// Description 返回工具描述（实现 Tool 接口）
 func (t *WriteFileTool) Description() string {
 	return "创建或覆盖文件。需要用户确认后才会执行。用于创建新文件或完全重写文件内容。"
 }
 
-// Parameters 两个必填参数：path（文件路径）和 content（文件内容）
+// Parameters 返回参数定义（实现 Tool 接口）
+// 两个必填参数：path（文件路径）和 content（文件内容）
 func (t *WriteFileTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
@@ -50,6 +54,7 @@ func (t *WriteFileTool) Parameters() map[string]any {
 	}
 }
 
+// Validate 校验参数（实现 Tool 接口）
 func (t *WriteFileTool) Validate(args map[string]any) error {
 	// path 必填
 	pathVal, ok := args["path"]
@@ -79,6 +84,7 @@ func (t *WriteFileTool) Validate(args map[string]any) error {
 	return security.IsSubPath(t.rootDir, path)
 }
 
+// Execute 执行写入文件（实现 Tool 接口）
 func (t *WriteFileTool) Execute(ctx context.Context, args map[string]any) (*ToolResult, error) {
 	path, _ := args["path"].(string)
 	content, _ := args["content"].(string)
