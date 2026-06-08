@@ -64,6 +64,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/pkoukk/tiktoken-go"
 )
 
 // OpenAIClient OpenAI 兼容的 LLM 客户端
@@ -132,20 +134,29 @@ func (c *OpenAIClient) SupportsVision() bool {
 	return c.supportsVision
 }
 
-// CountTokens 估算消息消耗的 token 数（实现 LLMClient 接口）
-// 简单估算：中文约 1 字 = 2 token，英文约 4 字符 = 1 token
-// 取平均值：每 3 个字符约 1 个 token
+// CountTokens 精确计算消息消耗的 token 数（实现 LLMClient 接口）
+// 使用 tiktoken BPE 分词器，跟模型实际计算方式一致
 func (c *OpenAIClient) CountTokens(messages []Message) (int, error) {
-	// total 累计所有消息的估算 token 数
-	total := 0
-	for _, msg := range messages {
-		total += len(msg.Content) / 3
-		for _, tc := range msg.ToolCalls {
-			total += len(tc.Function.Arguments) / 3
+	enc, err := tiktoken.EncodingForModel(c.model)
+	if err != nil {
+		// 模型名不认识，回退到 cl100k_base（GPT-4 编码，大多数兼容模型也适用）
+		enc, err = tiktoken.GetEncoding("cl100k_base")
+		if err != nil {
+			return 0, fmt.Errorf("获取 tiktoken 编码器失败: %w", err)
 		}
 	}
-	// 加上消息格式的额外开销（角色、分隔符等）
-	total += len(messages) * 4
+
+	total := 0
+	for _, msg := range messages {
+		// 精确计算消息内容的 token 数
+		total += len(enc.Encode(msg.Content, nil, nil))
+		for _, tc := range msg.ToolCalls {
+			total += len(enc.Encode(tc.Function.Name, nil, nil))
+			total += len(enc.Encode(tc.Function.Arguments, nil, nil))
+		}
+		// 每条消息的格式开销
+		total += 4
+	}
 	return total, nil
 }
 

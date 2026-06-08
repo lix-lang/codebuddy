@@ -1,38 +1,96 @@
 package context
 
-import "github.com/lix-lang/codebuddy/internal/llm"
+import (
+	"fmt"
+	"sync"
 
-// EstimateMessagesToken 估算一组消息的 token 数
-// 用于上下文管理：判断对话历史是否快超预算了
+	"github.com/lix-lang/codebuddy/internal/llm"
+	"github.com/pkoukk/tiktoken-go"
+)
+
+// tokenEncoder 全局的 tiktoken 编码器（单例，只初始化一次）
+// tiktoken 是 OpenAI 开源的 BPE 分词器，能精确计算 token 数
+// 不同模型用不同的编码方式：
+//   - GPT-4 / GPT-4o / GPT-3.5-turbo → "cl100k_base"
+//   - GLM / DeepSeek（兼容 OpenAI 格式）→ 也用 "cl100k_base"，误差很小
+//   - Claude → 有自己的分词器，但 cl100k_base 的结果也很接近
+var (
+	encoder     *tiktoken.Tiktoken
+	encoderOnce sync.Once // sync.Once 确保只初始化一次
+)
+
+// getEncoder 获取 tiktoken 编码器（懒加载，第一次调用时才初始化）
+func getEncoder() *tiktoken.Tiktoken {
+	// sync.Once.Do 保证里面的函数只执行一次，即使多个 goroutine 同时调用
+	// 后续调用直接返回已初始化的 encoder，不再重复执行
+	encoderOnce.Do(func() {
+		var err error
+		// tiktoken.EncodingForModel 根据模型名自动选择对应的编码方式
+		// 如果模型名不认识，回退到 "cl100k_base"（GPT-4 使用的编码）
+		encoder, err = tiktoken.EncodingForModel("gpt-4")
+		if err != nil {
+			// 回退到 cl100k_base 编码（适用于大多数 OpenAI 兼容模型）
+			encoder, _ = tiktoken.GetEncoding("cl100k_base")
+		}
+	})
+	return encoder
+}
+
+// CountMessagesToken 精确计算一组消息的 token 数
+// 使用 tiktoken BPE 分词器，跟模型实际计算方式一致
 //
-// 估算规则（粗略但够用）：
-//   - 英文约 4 个字符 = 1 token
-//   - 中文约 1 个字 ≈ 2 token
-//   - 取平均：每 3 个字符约 1 token
-//   - 每条消息额外 4 token 开销（角色标签、分隔符等）
-//
-// 注意：这只是估算，不是精确值。精确值需要用 tiktoken 等库，
-// 但对于上下文管理来说，估算够用了，误差在可接受范围内。
+// 每条消息的开销包括：
+//   - 消息内容的 token 数（精确计算）
+//   - 消息格式的固定开销（角色标签、分隔符等，约 4 token/条）
+//   - 工具调用的 token 数（函数名 + 参数）
+func CountMessagesToken(messages []llm.Message) int {
+	enc := getEncoder()
+	total := 0
+
+	for _, msg := range messages {
+		// 精确计算消息内容的 token 数
+		// enc.Encode 把文本拆成 token 列表，len 就是 token 数量
+		total += len(enc.Encode(msg.Content, nil, nil))
+
+		// 工具调用的 token 数
+		for _, tc := range msg.ToolCalls {
+			total += len(enc.Encode(tc.Function.Name, nil, nil))
+			total += len(enc.Encode(tc.Function.Arguments, nil, nil))
+		}
+
+		// 每条消息的格式开销（OpenAI API 格式的额外 token）
+		// 包括 <|start|>{role}\n{content}<|end|> 这些标记
+		total += 4
+	}
+
+	return total
+}
+
+// CountTextToken 精确计算纯文本的 token 数
+// 用于计算文件内容、system prompt 等的 token 消耗
+func CountTextToken(text string) int {
+	enc := getEncoder()
+	return len(enc.Encode(text, nil, nil))
+}
+
+// EstimateMessagesToken 估算一组消息的 token 数（快速但不够精确）
+// 在不需要精确值时使用（比如快速检查是否快超预算了）
+// 作为 CountMessagesToken 的轻量替代
 func EstimateMessagesToken(messages []llm.Message) int {
 	total := 0
 	for _, msg := range messages {
-		// 消息内容的 token 估算
+		// 粗略估算：字符数 / 3 ≈ token 数
 		total += len(msg.Content) / 3
-
-		// 工具调用参数的 token 估算
 		for _, tc := range msg.ToolCalls {
 			total += len(tc.Function.Name) / 3
 			total += len(tc.Function.Arguments) / 3
 		}
-
-		// 每条消息的格式开销（role: "user"\n, content: "..."\n 等）
 		total += 4
 	}
 	return total
 }
 
-// EstimateTextToken 估算纯文本的 token 数
-// 用于估算文件内容、system prompt 等的 token 消耗
+// EstimateTextToken 估算纯文本的 token 数（快速但不够精确）
 func EstimateTextToken(text string) int {
 	return len(text) / 3
 }
@@ -87,4 +145,10 @@ func (b TokenBudget) Remaining(used int) int {
 		return 0
 	}
 	return r
+}
+
+// TokenUsageInfo 返回人类可读的 token 使用情况
+func (b TokenBudget) TokenUsageInfo(used int) string {
+	return fmt.Sprintf("Token 使用: %d / %d (文件: %d, 历史: %d, 剩余: %d)",
+		used, b.Files+b.History, b.Files, b.History, b.Remaining(used))
 }
