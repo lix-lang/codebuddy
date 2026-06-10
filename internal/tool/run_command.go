@@ -40,6 +40,10 @@ func (t *RunCommandTool) Parameters() map[string]any {
 				"type":        "string",
 				"description": "要执行的 shell 命令",
 			},
+			"timeout": map[string]any{
+				"type":        "integer",
+				"description": "超时时间（秒），默认 120 秒",
+			},
 		},
 		"required": []string{"command"},
 	}
@@ -64,10 +68,24 @@ func (t *RunCommandTool) Validate(args map[string]any) error {
 func (t *RunCommandTool) Execute(ctx context.Context, args map[string]any) (*ToolResult, error) {
 	command, _ := args["command"].(string)
 
-	// 设置超时：30 秒
-	// context.WithTimeout 在 ctx 的基础上创建一个 30 秒后自动取消的 context
-	// cancel() 用来手动释放资源，用 defer 确保函数结束时一定执行
-	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	// timeout 参数：默认 120 秒
+	timeout := 120 * time.Second
+	if timeoutVal, ok := args["timeout"]; ok {
+		switch v := timeoutVal.(type) {
+		case float64:
+			timeout = time.Duration(v) * time.Second
+		case int:
+			timeout = time.Duration(v) * time.Second
+		}
+	}
+	if timeout < 5*time.Second {
+		timeout = 5 * time.Second // 最少 5 秒
+	}
+	if timeout > 600*time.Second {
+		timeout = 600 * time.Second // 最多 10 分钟
+	}
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	// exec.CommandContext 创建一个带超时控制的命令执行对象
@@ -117,5 +135,10 @@ func (t *RunCommandTool) Execute(ctx context.Context, args map[string]any) (*Too
 
 // IsDestructive 标记为破坏性操作（命令可能修改文件系统）
 func (t *RunCommandTool) IsDestructive() bool {
+	return true
+}
+
+// IsAvailable 基础工具始终可用（实现 Tool 接口）
+func (t *RunCommandTool) IsAvailable() bool {
 	return true
 }

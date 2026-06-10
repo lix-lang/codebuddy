@@ -37,15 +37,17 @@ func (t *SearchCodeTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			// query 是搜索关键词，必填
 			"query": map[string]any{
 				"type":        "string",
 				"description": "要搜索的关键词或文本",
 			},
-			// path 是搜索范围，可选，默认搜索整个项目
 			"path": map[string]any{
 				"type":        "string",
 				"description": "搜索范围（目录或文件路径），默认为项目根目录",
+			},
+			"file_type": map[string]any{
+				"type":        "string",
+				"description": "限定文件类型，如 go、py、js、ts 等（不含点号），默认搜索所有代码文件",
 			},
 		},
 		"required": []string{"query"},
@@ -88,41 +90,47 @@ func (t *SearchCodeTool) Execute(ctx context.Context, args map[string]any) (*Too
 		searchPath = pathVal
 	}
 
+	// file_type 参数：限定搜索的文件类型
+	var fileType string
+	if ftVal, ok := args["file_type"].(string); ok && ftVal != "" {
+		fileType = strings.TrimPrefix(ftVal, ".")
+	}
+
 	fullPath := filepath.Join(t.rootDir, searchPath)
 
 	// 搜索匹配的结果
 	var results []searchResult
-	// 最大返回 50 条结果，防止输出太长
 	maxResults := 50
 
-	// filepath.Walk 递归遍历目录树
-	// 对每个文件/目录调用传入的函数
 	filepath.Walk(fullPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			return nil // 跳过无法访问的文件
+			return nil
 		}
 
-		// 跳过目录和非代码文件
 		if info.IsDir() {
-			// 跳过隐藏目录和常见的非代码目录
 			name := info.Name()
 			if strings.HasPrefix(name, ".") || name == "vendor" || name == "node_modules" {
-				return filepath.SkipDir // SkipDir 跳过整个目录
+				return filepath.SkipDir
 			}
 			return nil
 		}
 
-		// 只搜索常见代码文件
-		if !isCodeFile(path) {
+		// 如果指定了 file_type，只搜索对应扩展名的文件
+		if fileType != "" {
+			ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(path)), ".")
+			if ext != strings.ToLower(fileType) {
+				return nil
+			}
+		} else if !isCodeFile(path) {
+			// 未指定 file_type 时，使用默认的代码文件过滤
 			return nil
 		}
 
-		// 搜索文件内容
 		matches := searchInFile(path, query)
 		results = append(results, matches...)
 		if len(results) >= maxResults {
 			results = results[:maxResults]
-			return fmt.Errorf("达到最大结果数") // 用错误中断 Walk
+			return fmt.Errorf("达到最大结果数")
 		}
 
 		return nil
@@ -150,7 +158,10 @@ func (t *SearchCodeTool) IsDestructive() bool {
 	return false
 }
 
-// isCodeFile 检查文件扩展名是否是代码文件
+// IsAvailable 基础工具始终可用（实现 Tool 接口）
+func (t *SearchCodeTool) IsAvailable() bool {
+	return true
+}
 func isCodeFile(path string) bool {
 	ext := strings.ToLower(filepath.Ext(path))
 	codeExts := map[string]bool{

@@ -34,6 +34,11 @@ type Tool interface {
 	// true = 需要用户确认（write_file, edit_file, run_command）
 	// false = 只读操作，不需要确认（read_file, search_code, analyze）
 	IsDestructive() bool
+
+	// IsAvailable 当前环境是否可用（动态过滤）
+	// 比如 web_search 需要配置 API Key，go_test 只在 Go 项目可用
+	// 不可用的工具不会发给 LLM（省 token，也避免 LLM 调用不存在的功能）
+	IsAvailable() bool
 }
 
 // ToolRegistry 工具注册中心
@@ -45,6 +50,16 @@ type ToolRegistry interface {
 	// Get 按名字查找工具（Agent 循环中 LLM 返回 ToolCall 时调用）
 	Get(name string) (Tool, bool)
 
-	// List 返回所有已注册的工具（构建 function definitions 时用）
+	// List 返回所有已注册的工具
 	List() []Tool
+
+	// ListNames 返回所有已注册工具的名字列表（用于错误提示）
+	ListNames() []string
+
+	// ValidateParams 校验工具调用参数（Schema 校验 + 业务校验）
+	ValidateParams(name string, args map[string]any) error
+
+	// ToOpenAITools 返回所有可用工具的 OpenAI Function Calling 格式定义
+	// 只返回 IsAvailable() == true 的工具
+	ToOpenAITools() []map[string]any
 }

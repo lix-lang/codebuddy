@@ -33,19 +33,20 @@ func (t *ListDirTool) Description() string {
 }
 
 // Parameters 返回参数定义（实现 Tool 接口）
-// path 是可选参数，不传就列出项目根目录
+// path 和 depth 都是可选参数
 func (t *ListDirTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
 			"path": map[string]any{
-				// "type": "string" 参数值是字符串
-				"type": "string",
-				// "description" 告诉 LLM 这个参数的含义
+				"type":        "string",
 				"description": "要列出的目录路径，默认为项目根目录",
 			},
+			"depth": map[string]any{
+				"type":        "integer",
+				"description": "递归深度，1 表示只列出当前层（默认），-1 表示全部递归",
+			},
 		},
-		// 没有 "required" 字段，表示 path 是可选参数
 	}
 }
 
@@ -69,53 +70,114 @@ func (t *ListDirTool) Validate(args map[string]any) error {
 
 // Execute 执行列出目录（实现 Tool 接口）
 func (t *ListDirTool) Execute(ctx context.Context, args map[string]any) (*ToolResult, error) {
-	// path 可选，默认 "."（项目根目录）
-	// args["path"].(string) 类型断言取值，ok 判断是否存在
 	path := "."
 	if pathVal, ok := args["path"].(string); ok && pathVal != "" {
 		path = pathVal
 	}
 
-	// filepath.Join 拼接完整路径
-	fullPath := filepath.Join(t.rootDir, path)
-
-	// os.ReadDir 读取目录下的所有文件和子目录
-	entries, err := os.ReadDir(fullPath)
-	if err != nil {
-		return &ToolResult{Output: fmt.Sprintf("读取目录失败: %v", err), IsError: true}, nil
+	// depth 参数：1=只列当前层（默认），-1=全部递归
+	depth := 1
+	if depthVal, ok := args["depth"]; ok {
+		switch v := depthVal.(type) {
+		case float64:
+			depth = int(v)
+		case int:
+			depth = v
+		}
 	}
 
-	// sort.Slice 自定义排序，按文件名字母顺序排列
+	fullPath := filepath.Join(t.rootDir, path)
+
+	// 根据深度决定用递归遍历还是单层读取
+	var lines []string
+	if depth == 1 {
+		lines = listDirFlat(fullPath)
+	} else {
+		maxDepth := depth
+		if depth < 0 {
+			maxDepth = 999 // -1 表示无限递归
+		}
+		lines = listDirRecursive(fullPath, 0, maxDepth)
+	}
+
+	if len(lines) == 0 {
+		return &ToolResult{Output: fmt.Sprintf("目录 %s 为空或不存在", path), IsError: false}, nil
+	}
+
+	output := fmt.Sprintf("目录: %s\n%s", path, strings.Join(lines, "\n"))
+	return &ToolResult{Output: output, IsError: false}, nil
+}
+
+// listDirFlat 单层列出目录内容
+func listDirFlat(fullPath string) []string {
+	entries, err := os.ReadDir(fullPath)
+	if err != nil {
+		return []string{fmt.Sprintf("读取目录失败: %v", err)}
+	}
+
 	sort.Slice(entries, func(i, j int) bool {
 		return entries[i].Name() < entries[j].Name()
 	})
 
-	// 格式化输出：目录后加 /，文件显示大小
 	var lines []string
 	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".") && entry.Name() != "." {
+			continue
+		}
 		if entry.IsDir() {
 			lines = append(lines, entry.Name()+"/")
 		} else {
-			// entry.Info() 获取文件的详细信息（大小、权限、修改时间等）
 			info, _ := entry.Info()
 			lines = append(lines, fmt.Sprintf("%s (%d bytes)", entry.Name(), info.Size()))
 		}
 	}
+	return lines
+}
 
-	// 过滤掉 .codebuddy 目录（内部目录，不需要给 LLM 看）
-	var filtered []string
-	for _, line := range lines {
-		if !strings.Contains(line, ".codebuddy") {
-			filtered = append(filtered, line)
-		}
+// listDirRecursive 递归列出目录内容，带缩进表示层级
+func listDirRecursive(fullPath string, currentDepth, maxDepth int) []string {
+	if currentDepth >= maxDepth {
+		return nil
 	}
 
-	// strings.Join 用换行符拼接所有行
-	output := fmt.Sprintf("目录: %s\n%s", path, strings.Join(filtered, "\n"))
-	return &ToolResult{Output: output, IsError: false}, nil
+	entries, err := os.ReadDir(fullPath)
+	if err != nil {
+		return []string{fmt.Sprintf("读取目录失败: %v", err)}
+	}
+
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Name() < entries[j].Name()
+	})
+
+	var lines []string
+	prefix := strings.Repeat("  ", currentDepth)
+
+	for _, entry := range entries {
+		name := entry.Name()
+		// 跳过隐藏目录和不需要的目录
+		if strings.HasPrefix(name, ".") || name == "vendor" || name == "node_modules" {
+			continue
+		}
+
+		if entry.IsDir() {
+			lines = append(lines, prefix+name+"/")
+			subPath := filepath.Join(fullPath, name)
+			subLines := listDirRecursive(subPath, currentDepth+1, maxDepth)
+			lines = append(lines, subLines...)
+		} else {
+			info, _ := entry.Info()
+			lines = append(lines, fmt.Sprintf("%s%s (%d bytes)", prefix, name, info.Size()))
+		}
+	}
+	return lines
 }
 
 // IsDestructive 标记为只读工具（实现 Tool 接口）
 func (t *ListDirTool) IsDestructive() bool {
 	return false
+}
+
+// IsAvailable 基础工具始终可用（实现 Tool 接口）
+func (t *ListDirTool) IsAvailable() bool {
+	return true
 }

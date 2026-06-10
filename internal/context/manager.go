@@ -40,6 +40,7 @@ package context
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -60,12 +61,13 @@ type DefaultContextManager struct {
 	maxContext int    // 模型最大上下文窗口（token），如 128000
 
 	// ---- 三层 Prompt 缓存 ----
-	systemPrompt string // 稳定层：SOUL.md 加载后的系统提示词（启动时加载，很少变）
+	systemPrompt string          // 稳定层：SOUL.md 加载后的系统提示词（启动时加载，很少变）
+	rulesPrompt  string          // 稳定层：RULES.md 加载后的防幻觉规则（启动时加载，很少变）
 	project      *ProjectContext // 上下文层：项目扫描结果（缓存）
 
 	// ---- 易变层状态 ----
-	history      []llm.Message // 对话历史（用户消息 + 助手回复 + 工具调用结果）
-	workingFiles []string      // 工作集：最近几轮涉及的文件路径，保持高分不被挤掉
+	history      []llm.Message   // 对话历史（用户消息 + 助手回复 + 工具调用结果）
+	workingFiles []string        // 工作集：最近几轮涉及的文件路径，保持高分不被挤掉
 	addedFiles   map[string]bool // 用户手动添加的文件（AddFile），优先级最高
 
 	// ---- Token 预算 ----
@@ -80,7 +82,7 @@ type ContextManagerConfig struct {
 }
 
 // NewContextManager 创建上下文管理器
-// 启动时：扫描项目 + 加载 SOUL.md + 计算 token 预算
+// 启动时：加载 SOUL.md + 计算 token 预算（不扫描项目，用户用 /scan 手动触发）
 func NewContextManager(cfg ContextManagerConfig) (*DefaultContextManager, error) {
 	cm := &DefaultContextManager{
 		model:      cfg.Model,
@@ -95,14 +97,30 @@ func NewContextManager(cfg ContextManagerConfig) (*DefaultContextManager, error)
 	// 2. 加载 SOUL.md（稳定层）
 	cm.systemPrompt = loadSOULMD(cfg.RootDir)
 
-	// 3. 扫描项目（上下文层）
-	project, err := ScanProject(cfg.RootDir)
-	if err != nil {
-		return nil, fmt.Errorf("扫描项目失败: %w", err)
-	}
-	cm.project = project
+	// 3. 加载 RULES.md（稳定层）
+	cm.rulesPrompt = loadRULESMD(cfg.RootDir)
 
 	return cm, nil
+}
+
+// Scan 手动扫描项目（由 /scan 命令触发）
+func (cm *DefaultContextManager) Scan() error {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	project, err := ScanProject(cm.rootDir)
+	if err != nil {
+		return fmt.Errorf("扫描项目失败: %w", err)
+	}
+	cm.project = project
+	return nil
+}
+
+// HasScanned 项目是否已扫描
+func (cm *DefaultContextManager) HasScanned() bool {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+	return cm.project != nil
 }
 
 // ================================================================
@@ -124,6 +142,8 @@ func (cm *DefaultContextManager) BuildMessages(userMsg string) ([]llm.Message, e
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
+	log.Printf("[CTX] BuildMessages start, userMsg=%q, historyLen=%d", userMsg, len(cm.history))
+
 	var messages []llm.Message
 
 	// ==== 稳定层：System Prompt ====
@@ -133,6 +153,7 @@ func (cm *DefaultContextManager) BuildMessages(userMsg string) ([]llm.Message, e
 		Role:    llm.RoleSystem,
 		Content: systemContent,
 	})
+	log.Printf("[CTX] system prompt: %d chars", len(systemContent))
 
 	// ==== 上下文层：项目概览 ====
 	// 包含项目名、依赖、文件数量、分层结构等信息
@@ -143,6 +164,7 @@ func (cm *DefaultContextManager) BuildMessages(userMsg string) ([]llm.Message, e
 			Role:    llm.RoleSystem,
 			Content: projectContent,
 		})
+		log.Printf("[CTX] project context: %d chars", len(projectContent))
 	}
 
 	// ==== 上下文层：相关文件内容 ====
@@ -150,22 +172,28 @@ func (cm *DefaultContextManager) BuildMessages(userMsg string) ([]llm.Message, e
 	// 拼接文件内容，每个文件用 ``` 包裹
 	fileMessages := cm.buildFileContext(userMsg)
 	messages = append(messages, fileMessages...)
+	log.Printf("[CTX] file context: %d messages", len(fileMessages))
 
 	// ==== 易变层：对话历史 ====
 	// 从最早的对话开始添加，直到接近预算
 	// 如果历史太长，压缩早期对话
 	historyMessages := cm.buildHistory()
 	messages = append(messages, historyMessages...)
+	log.Printf("[CTX] history: %d messages", len(historyMessages))
 
 	// ==== 易变层：用户新消息 ====
-	messages = append(messages, llm.Message{
-		Role:    llm.RoleUser,
-		Content: userMsg,
-	})
+	if userMsg != "" {
+		messages = append(messages, llm.Message{
+			Role:    llm.RoleUser,
+			Content: userMsg,
+		})
+	}
 
 	// ==== Token 检查：超预算就压缩 ====
 	used := CountMessagesToken(cm.model, messages)
+	log.Printf("[CTX] total messages=%d, tokens=%d, budget=%d", len(messages), used, cm.budget.Files+cm.budget.History)
 	if used > cm.budget.Files+cm.budget.History {
+		log.Printf("[CTX] over budget, compacting")
 		// 超预算了，压缩早期对话（只保留最近几轮）
 		messages = cm.compactMessages(messages, userMsg)
 	}
@@ -173,6 +201,7 @@ func (cm *DefaultContextManager) BuildMessages(userMsg string) ([]llm.Message, e
 	// 更新工作集：用户消息里提到的文件加入工作集
 	cm.updateWorkingFiles(userMsg)
 
+	log.Printf("[CTX] BuildMessages done, %d messages", len(messages))
 	return messages, nil
 }
 
@@ -271,13 +300,19 @@ func (cm *DefaultContextManager) Reset() {
 // ================================================================
 
 // buildSystemPrompt 构建系统提示词（稳定层）
-// 包含 SOUL.md 内容 + 工具使用规则
+// 包含 SOUL.md 内容 + RULES.md 防幻觉规则 + 工具使用规则
 func (cm *DefaultContextManager) buildSystemPrompt() string {
 	var sb strings.Builder
 
 	// SOUL.md 的内容（如果有的话）
 	if cm.systemPrompt != "" {
 		sb.WriteString(cm.systemPrompt)
+		sb.WriteString("\n\n")
+	}
+
+	// RULES.md 的内容（防幻觉规则）
+	if cm.rulesPrompt != "" {
+		sb.WriteString(cm.rulesPrompt)
 		sb.WriteString("\n\n")
 	}
 
@@ -470,6 +505,9 @@ func (cm *DefaultContextManager) summarizeHistory(messages []llm.Message) string
 // updateWorkingFiles 从用户消息中提取提到的文件，加入工作集
 // 工作集里的文件在后续 SelectFiles 中会得到额外加分（工作集惯性信号）
 func (cm *DefaultContextManager) updateWorkingFiles(userMsg string) {
+	if cm.project == nil {
+		return
+	}
 	// 遍历所有项目文件，检查用户消息是否提到了该文件
 	for _, f := range cm.project.Files {
 		if isFileMentioned(userMsg, f.Path) {
@@ -522,26 +560,76 @@ func (cm *DefaultContextManager) getWorkingAndAddedFiles() []string {
 // ================================================================
 
 // loadSOULMD 加载 SOUL.md 系统提示词
-// SOUL.md 是一个 markdown 文件，放在项目根目录或 .codebuddy/ 目录下
-// 用来定义 Agent 的"性格"和行为规则
+// SOUL.md 是一个 markdown 文件，用来定义 Agent 的"性格"和行为规则
 //
-// 查找顺序：
-//  1. .codebuddy/SOUL.md（项目级，覆盖全局）
+// 查找顺序（项目级覆盖全局）：
+//  1. .codebuddy/SOUL.md（项目级，最高优先级）
 //  2. SOUL.md（项目根目录）
-//  3. 如果都不存在，返回空字符串（用默认规则）
+//  3. ~/.codebuddy/SOUL.md（全局）
+//  4. 如果都不存在，使用内置默认人格
 func loadSOULMD(rootDir string) string {
-	// 尝试 .codebuddy/SOUL.md
+	// 1. 尝试 .codebuddy/SOUL.md（项目级）
 	path1 := filepath.Join(rootDir, ".codebuddy", "SOUL.md")
 	if data, err := os.ReadFile(path1); err == nil {
 		return string(data)
 	}
 
-	// 尝试项目根目录的 SOUL.md
+	// 2. 尝试项目根目录的 SOUL.md
 	path2 := filepath.Join(rootDir, "SOUL.md")
 	if data, err := os.ReadFile(path2); err == nil {
 		return string(data)
 	}
 
-	// 都没有，返回空（buildSystemPrompt 会用默认规则）
-	return ""
+	// 3. 尝试全局 ~/.codebuddy/SOUL.md
+	if homeDir, err := os.UserHomeDir(); err == nil {
+		path3 := filepath.Join(homeDir, ".codebuddy", "SOUL.md")
+		if data, err := os.ReadFile(path3); err == nil {
+			return string(data)
+		}
+	}
+
+	// 4. 都没有，返回内置默认人格
+	return defaultSOULMD
 }
+
+// defaultSOULMD 内置默认 SOUL.md 内容
+const defaultSOULMD = `你是 Codebuddy，一个专业的编程助手。
+你擅长代码分析、Bug 修复、重构和测试。
+回复使用中文，代码注释使用中文。`
+
+// loadRULESMD 加载 RULES.md 防幻觉规则
+// RULES.md 定义 Agent 的防幻觉规则，和 SOUL.md 一样支持全局/项目两级覆盖
+//
+// 查找顺序：
+//  1. .codebuddy/RULES.md（项目级）
+//  2. ~/.codebuddy/RULES.md（全局）
+//  3. 如果都不存在，使用内置默认防幻觉规则
+func loadRULESMD(rootDir string) string {
+	// 1. 项目级
+	path1 := filepath.Join(rootDir, ".codebuddy", "RULES.md")
+	if data, err := os.ReadFile(path1); err == nil {
+		return string(data)
+	}
+
+	// 2. 全局
+	if homeDir, err := os.UserHomeDir(); err == nil {
+		path2 := filepath.Join(homeDir, ".codebuddy", "RULES.md")
+		if data, err := os.ReadFile(path2); err == nil {
+			return string(data)
+		}
+	}
+
+	// 3. 内置默认规则
+	return defaultRulesMD
+}
+
+// defaultRulesMD 内置默认 RULES.md（防幻觉规则）
+const defaultRulesMD = `严格遵守以下防幻觉规则：
+
+1. 【必须先读后改】修改任何文件前，必须先调用 read_file 读取原始内容
+2. 【禁止编造内容】不要猜测文件内容、函数签名或项目结构，必须通过工具查询
+3. 【禁止假设结果】不要假设命令执行结果，必须实际执行并查看输出
+4. 【禁止编造工具】只能使用系统提供的工具，不能编造工具名
+5. 【参数必须精确】工具调用的参数（文件路径、函数名等）必须与实际完全一致
+6. 【不确定就查】如果不确定某个信息，先调用工具查询，再进行操作
+7. 【失败要如实报告】如果操作失败，如实报告错误信息，不要编造成功结果`

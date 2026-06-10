@@ -129,3 +129,8 @@ func (t *ReadFileTool) Execute(ctx context.Context, args map[string]any) (*ToolR
 func (t *ReadFileTool) IsDestructive() bool {
 	return false
 }
+
+// IsAvailable 基础工具始终可用（实现 Tool 接口）
+func (t *ReadFileTool) IsAvailable() bool {
+	return true
+}

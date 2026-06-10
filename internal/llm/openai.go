@@ -37,9 +37,9 @@
 //
 //  6. 工具调用碎片拼接（handleToolCallChunk）：
 //     一个工具调用的参数可能分成多个 chunk 传输：
-//       chunk1: arguments = "{\"pa"
-//       chunk2: arguments = "th\":\"main"
-//       chunk3: arguments = ".go\"}"
+//     chunk1: arguments = "{\"pa"
+//     chunk2: arguments = "th\":\"main"
+//     chunk3: arguments = ".go\"}"
 //     用 toolCallBuffer 按 index 拼接：最终得到 {"path":"main.go"}
 //
 // # 并发模型
@@ -61,6 +61,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -71,10 +72,10 @@ import (
 // OpenAIClient OpenAI 兼容的 LLM 客户端
 // 适用于 OpenAI / GLM / DeepSeek / Ollama 等兼容 OpenAI API 格式的提供商
 type OpenAIClient struct {
-	apiKey         string // API Key
-	baseURL        string // API 地址，如 "https://open.bigmodel.cn/api/paas/v4"
-	model          string // 模型名，如 "glm-4"
-	maxTokens      int    // 最大输出 token
+	apiKey         string       // API Key
+	baseURL        string       // API 地址，如 "https://open.bigmodel.cn/api/paas/v4"
+	model          string       // 模型名，如 "glm-4"
+	maxTokens      int          // 最大输出 token
 	temperature    float64      // 生成温度，控制输出随机性
 	maxContext     int          // 最大上下文窗口（token）
 	supportsVision bool         // 是否支持图片
@@ -134,47 +135,72 @@ func (c *OpenAIClient) SupportsVision() bool {
 	return c.supportsVision
 }
 
-// CountTokens 精确计算消息消耗的 token 数（实现 LLMClient 接口）
-// 使用 tiktoken BPE 分词器，跟模型实际计算方式一致
+// CountTokens 估算消息消耗的 token 数（实现 LLMClient 接口）
+// 使用 tiktoken BPE 分词器；未知模型回退到字符估算
 func (c *OpenAIClient) CountTokens(messages []Message) (int, error) {
-	enc, err := tiktoken.EncodingForModel(c.model)
-	if err != nil {
-		// 模型名不认识，回退到 cl100k_base（GPT-4 编码，大多数兼容模型也适用）
-		enc, err = tiktoken.GetEncoding("cl100k_base")
-		if err != nil {
-			return 0, fmt.Errorf("获取 tiktoken 编码器失败: %w", err)
-		}
-	}
+	// 用 recover 防止 tiktoken 正则 panic（如 GLM 等非标准模型名）
+	count, err := func() (n int, err error) {
+		defer func() {
+			if r := recover(); r != nil {
+				err = fmt.Errorf("tiktoken panic: %v", r)
+			}
+		}()
 
-	total := 0
-	for _, msg := range messages {
-		// 精确计算消息内容的 token 数
-		total += len(enc.Encode(msg.Content, nil, nil))
-		for _, tc := range msg.ToolCalls {
-			total += len(enc.Encode(tc.Function.Name, nil, nil))
-			total += len(enc.Encode(tc.Function.Arguments, nil, nil))
+		enc, e := tiktoken.EncodingForModel(c.model)
+		if e != nil {
+			enc, e = tiktoken.GetEncoding("cl100k_base")
+			if e != nil {
+				return 0, e
+			}
 		}
-		// 每条消息的格式开销
-		total += 4
+
+		total := 0
+		for _, msg := range messages {
+			total += len(enc.Encode(msg.Content, nil, nil))
+			for _, tc := range msg.ToolCalls {
+				total += len(enc.Encode(tc.Function.Name, nil, nil))
+				total += len(enc.Encode(tc.Function.Arguments, nil, nil))
+			}
+			total += 4
+		}
+		return total, nil
+	}()
+
+	if err != nil {
+		// 回退：字符数 / 4 近似 token 数
+		total := 0
+		for _, msg := range messages {
+			total += len(msg.Content) / 4
+			for _, tc := range msg.ToolCalls {
+				total += len(tc.Function.Name) / 4
+				total += len(tc.Function.Arguments) / 4
+			}
+			total += 4
+		}
+		return total, nil
 	}
-	return total, nil
+	return count, nil
 }
 
 // ChatStream 流式调用 LLM（实现 LLMClient 接口）
 func (c *OpenAIClient) ChatStream(ctx context.Context, messages []Message, tools []ToolDefinition) (<-chan StreamEvent, error) {
 	// 1. 组装请求体
 	reqBody := c.buildRequestBody(messages, tools)
+	log.Printf("[API] ChatStream start, model=%s, msgs=%d, tools=%d", c.model, len(messages), len(tools))
 
 	// 2. 发送 HTTP 请求
 	resp, err := c.sendRequest(ctx, reqBody)
 	if err != nil {
+		log.Printf("[API] sendRequest error: %v", err)
 		return nil, fmt.Errorf("API 请求失败: %w", err)
 	}
 
 	// 3. 检查响应状态码
+	log.Printf("[API] HTTP %d", resp.StatusCode)
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
+		log.Printf("[API] error response: %s", string(body))
 		return nil, fmt.Errorf("API 返回错误 (HTTP %d): %s", resp.StatusCode, string(body))
 	}
 
@@ -267,9 +293,10 @@ func (c *OpenAIClient) sendRequest(ctx context.Context, body map[string]any) (*h
 
 // parseSSEStream 从 HTTP 响应体中读取 SSE 流
 // SSE (Server-Sent Events) 格式：
-//   data: {"choices":[{"delta":{"content":"你"}}]}
-//   data: {"choices":[{"delta":{"content":"好"}}]}
-//   data: [DONE]
+//
+//	data: {"choices":[{"delta":{"content":"你"}}]}
+//	data: {"choices":[{"delta":{"content":"好"}}]}
+//	data: [DONE]
 func parseSSEStream(body io.Reader, eventCh chan<- StreamEvent) {
 	// bufio.NewScanner 按行读取（SSE 是一行一行传的）
 	// scanner 是按行分割的读取器，每次 Scan() 读一行
@@ -280,10 +307,19 @@ func parseSSEStream(body io.Reader, eventCh chan<- StreamEvent) {
 	// toolCallBuffers 用来拼接工具调用碎片
 	// key 是工具调用 ID，value 是拼接后的结果
 	toolCallBuffers := make(map[string]*toolCallBuffer)
+	lineCount := 0
+	dataCount := 0
 
+	log.Printf("[SSE] start reading stream")
 	for scanner.Scan() {
 		// line 是从 SSE 流中读到的当前行文本
 		line := scanner.Text()
+		lineCount++
+
+		// 调试：打印前几行的原始内容
+		if lineCount <= 5 {
+			log.Printf("[SSE] line %d: %q", lineCount, line)
+		}
 
 		// SSE 格式中，每行以 "data: " 开头
 		if !strings.HasPrefix(line, "data: ") {
@@ -293,9 +329,11 @@ func parseSSEStream(body io.Reader, eventCh chan<- StreamEvent) {
 		// 去掉 "data: " 前缀，拿到 JSON 内容
 		// data 是去掉 SSE 前缀后的原始 JSON 字符串
 		data := strings.TrimPrefix(line, "data: ")
+		dataCount++
 
 		// [DONE] 表示流结束
 		if data == "[DONE]" {
+			log.Printf("[SSE] [DONE] received, totalLines=%d dataLines=%d", lineCount, dataCount)
 			eventCh <- StreamEvent{Type: StreamEventDone}
 			return
 		}
@@ -303,6 +341,7 @@ func parseSSEStream(body io.Reader, eventCh chan<- StreamEvent) {
 		// 解析 JSON chunk
 		event, err := parseSSEChunk(data, toolCallBuffers)
 		if err != nil {
+			log.Printf("[SSE] parse chunk error (line %d): %v", lineCount, err)
 			continue // 跳过无法解析的 chunk
 		}
 
@@ -310,6 +349,11 @@ func parseSSEStream(body io.Reader, eventCh chan<- StreamEvent) {
 			eventCh <- *event
 		}
 	}
+
+	if err := scanner.Err(); err != nil {
+		log.Printf("[SSE] scanner error: %v", err)
+	}
+	log.Printf("[SSE] stream ended without [DONE], totalLines=%d dataLines=%d", lineCount, dataCount)
 }
 
 // toolCallBuffer 用于拼接同一个工具调用的多个碎片

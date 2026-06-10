@@ -23,6 +23,7 @@ package context
 import (
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -62,12 +63,25 @@ type tiktokenCounter struct {
 //   - "gpt-3.5-turbo" → cl100k_base
 //
 // 如果模型名不认识，回退到 cl100k_base
+// 如果 tiktoken panic（Go RE2 不支持 Perl 正则），返回 nil
 func newTiktokenCounter(model string) *tiktokenCounter {
-	// tiktoken.EncodingForModel 根据模型名选择对应的编码器
-	enc, err := tiktoken.EncodingForModel(model)
-	if err != nil {
-		// 模型名不认识，回退到 cl100k_base（GPT-4 的编码，大多数模型也接近）
-		enc, _ = tiktoken.GetEncoding("cl100k_base")
+	enc := func() (result *tiktoken.Tiktoken) {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[TOKENIZER] tiktoken panic for model %q: %v", model, r)
+				result = nil
+			}
+		}()
+		// tiktoken.EncodingForModel 根据模型名选择对应的编码器
+		e, err := tiktoken.EncodingForModel(model)
+		if err != nil {
+			// 模型名不认识，回退到 cl100k_base（GPT-4 的编码，大多数模型也接近）
+			e, _ = tiktoken.GetEncoding("cl100k_base")
+		}
+		return e
+	}()
+	if enc == nil {
+		return nil
 	}
 	return &tiktokenCounter{enc: enc}
 }
@@ -76,6 +90,18 @@ func newTiktokenCounter(model string) *tiktokenCounter {
 // enc.Encode 把文本拆成 token ID 列表，len 就是 token 数量
 func (t *tiktokenCounter) CountTokens(text string) int {
 	return len(t.enc.Encode(text, nil, nil))
+}
+
+// ================================================================
+// 字符估算分词器 —— 最终回退
+// ================================================================
+
+// charEstimateCounter 用字符数 / 3 估算 token 数
+// 在 tiktoken panic（Go RE2 不支持 Perl 正则）时使用
+type charEstimateCounter struct{}
+
+func (c *charEstimateCounter) CountTokens(text string) int {
+	return len(text) / 3
 }
 
 // ================================================================
@@ -111,8 +137,9 @@ func (q *qwenCounter) CountTokens(text string) int {
 // 可以用 sugarme/tokenizer 这个通用库加载
 //
 // 首次使用时从 HuggingFace 下载 tokenizer.json（~1-3MB），缓存到本地：
-//   ~/.codebuddy/tokenizers/hf-glm.json
-//   ~/.codebuddy/tokenizers/hf-deepseek.json
+//
+//	~/.codebuddy/tokenizers/hf-glm.json
+//	~/.codebuddy/tokenizers/hf-deepseek.json
 type hfCounter struct {
 	tz *tokenizer.Tokenizer // sugarme 分词器实例
 }
@@ -144,7 +171,12 @@ func newHFCounter(tokenizerType string) TokenCounter {
 	config, ok := hfModelMap[tokenizerType]
 	if !ok {
 		// 没有对应的 HuggingFace 配置，回退到 tiktoken
-		return newTiktokenCounter("gpt-4")
+		log.Printf("[TOKENIZER] no HF config for %q, falling back to tiktoken", tokenizerType)
+		tc := newTiktokenCounter("gpt-4")
+		if tc != nil {
+			return tc
+		}
+		return nil
 	}
 
 	// 缓存路径: ~/.codebuddy/tokenizers/hf-glm.json
@@ -154,32 +186,62 @@ func newHFCounter(tokenizerType string) TokenCounter {
 
 	// 如果本地没有缓存，从 HuggingFace 下载
 	if _, err := os.Stat(cachePath); os.IsNotExist(err) {
+		log.Printf("[TOKENIZER] no cache at %q, downloading from HuggingFace", cachePath)
 		if err := downloadHFTokenizer(config, cacheDir, cachePath); err != nil {
 			// 下载失败（没网络等），回退到 tiktoken
-			fmt.Printf("警告: 下载 %s 分词器失败 (%v)，使用 tiktoken 近似\n", tokenizerType, err)
-			return newTiktokenCounter("gpt-4")
+			log.Printf("[TOKENIZER] download failed: %v, falling back to tiktoken", err)
+			tc := newTiktokenCounter("gpt-4")
+			if tc != nil {
+				return tc
+			}
+			return nil
 		}
 	}
 
 	// 用 sugarme/tokenizer 加载 tokenizer.json
-	tz, err := pretrained.FromFile(cachePath)
-	if err != nil {
-		fmt.Printf("警告: 加载 %s 分词器失败 (%v)，使用 tiktoken 近似\n", cachePath, err)
-		return newTiktokenCounter("gpt-4")
+	// 注意：sugarme 内部用 Go 标准 regexp 编译 tokenizer.json 中的正则，
+	// GLM 的 tokenizer.json 包含 (?!\S) 负向前瞻（Perl 语法，Go RE2 不支持），
+	// 会导致 panic，所以必须用 recover 兜住
+	tz, err := func() (*tokenizer.Tokenizer, error) {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[TOKENIZER] pretrained.FromFile panic for %q: %v", cachePath, r)
+			}
+		}()
+		return pretrained.FromFile(cachePath)
+	}()
+	if err != nil || tz == nil {
+		log.Printf("[TOKENIZER] HF load %q failed (err=%v), falling back to tiktoken", cachePath, err)
+		tc := newTiktokenCounter("gpt-4")
+		if tc != nil {
+			return tc
+		}
+		return nil
 	}
 
+	log.Printf("[TOKENIZER] HF tokenizer loaded: %q", cachePath)
 	return &hfCounter{tz: tz}
 }
 
 // CountTokens 用 HuggingFace 分词器计算 token 数
 func (h *hfCounter) CountTokens(text string) int {
-	// EncodeSingle 把文本编码成 token，返回 Encoding 对象
-	enc, err := h.tz.EncodeSingle(text)
-	if err != nil {
-		return len(text) / 3 // 编码失败，粗略估算
+	// recover 防止 sugarme 内部正则编译 panic（如负向前瞻等 Perl 语法）
+	result := func() int {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[TOKENIZER] hfCounter.CountTokens panic: %v", r)
+			}
+		}()
+		enc, err := h.tz.EncodeSingle(text)
+		if err != nil {
+			return 0
+		}
+		return enc.Len()
+	}()
+	if result > 0 {
+		return result
 	}
-	// enc.Len() 返回 token 数量
-	return enc.Len()
+	return len(text) / 3 // 编码失败，粗略估算
 }
 
 // downloadHFTokenizer 从 HuggingFace 下载 tokenizer.json 到本地缓存
@@ -293,8 +355,18 @@ func GetTokenCounter(model string) TokenCounter {
 		counter = newQwenCounter()
 	case strings.HasPrefix(tzType, "hf-"):
 		counter = newHFCounter(tzType)
+		if counter == nil {
+			// HF 分词器创建失败，回退到 tiktoken
+			counter = newTiktokenCounter(model)
+		}
 	default:
 		counter = newTiktokenCounter(model)
+	}
+
+	// tiktoken 也 panic 了（Go RE2 不支持 Perl 正则），用字符估算
+	if counter == nil {
+		log.Printf("[TOKENIZER] all tokenizers failed for %q, using char estimator", model)
+		counter = &charEstimateCounter{}
 	}
 
 	// 存入缓存，下次直接命中

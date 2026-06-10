@@ -14,54 +14,87 @@ const DefaultConfigDir = ".codebuddy"
 // DefaultConfigFile 默认配置文件名
 const DefaultConfigFile = "config.json"
 
+// projectMarkers 项目根目录标记文件/目录
+// 从当前目录往上逐级查找，遇到这些标记就认为是项目根
+var projectMarkers = []string{
+	".git",
+	"go.mod",
+	"package.json",
+	"Cargo.toml",
+	"pyproject.toml",
+	"pom.xml",
+	"Makefile",
+}
+
+// findProjectRoot 从 dir 开始往上找项目根目录
+// 通过检测 projectMarkers 中的标记文件来判断
+// 找不到返回空字符串
+func findProjectRoot(dir string) string {
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return ""
+	}
+
+	homeDir, _ := os.UserHomeDir()
+
+	for {
+		// 到家目录就停，别往上跑到 / 去
+		if absDir == homeDir || absDir == "/" {
+			return ""
+		}
+
+		for _, marker := range projectMarkers {
+			if _, err := os.Stat(filepath.Join(absDir, marker)); err == nil {
+				return absDir
+			}
+		}
+
+		parent := filepath.Dir(absDir)
+		if parent == absDir {
+			return ""
+		}
+		absDir = parent
+	}
+}
+
 // Load 加载配置，合并全局和项目两级配置文件
 //
 // 加载顺序：
 //  1. 全局配置：~/.codebuddy/config.json（所有项目共享）
-//  2. 项目配置：<projectDir>/.codebuddy/config.json（项目专属，覆盖全局）
+//  2. 项目配置：自动检测项目根目录，加载 <projectRoot>/.codebuddy/config.json
 //  3. 环境变量插值：把 "${OPENAI_API_KEY}" 这样的占位符替换成真实环境变量
 //
-// 如果全局配置文件不存在，不会报错（返回零值 Config）
-// 如果项目配置文件不存在，也不会报错（只用全局配置）
-//
-// 参数 projectDir 是当前项目的根目录路径，用来定位项目级配置文件
-func Load(projectDir string) (*Config, error) {
+// 全局配置始终从家目录加载，项目配置需要检测到项目标记（.git 等）才会查找
+func Load() (*Config, error) {
 	// 1. 获取用户主目录，拼接全局配置路径 ~/.codebuddy/config.json
-	// os.UserHomeDir() 返回当前用户的主目录路径，如 "/Users/lixiaoyang"
-	// homeDir: 当前用户的主目录路径，用于拼接全局配置文件路径
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("获取用户目录失败: %w", err)
 	}
-	// filepath.Join 把多个路径片段拼成一个完整路径，自动处理路径分隔符
-	// 结果如："/Users/lixiaoyang/.codebuddy/config.json"
 	globalPath := filepath.Join(homeDir, DefaultConfigDir, DefaultConfigFile)
 
 	// 2. 尝试加载全局配置
-	// os.Stat(path) 获取文件信息，err == nil 表示文件存在，err != nil 表示不存在
-	// cfg: 最终返回的配置对象，先用零值初始化，后续逐步填充
 	cfg := &Config{}
 	if _, err := os.Stat(globalPath); err == nil {
 		cfg, err = loadFromFile(globalPath)
 		if err != nil {
-			// %w 是 "wrap" 的意思，把原始错误包进新的错误信息，上层可以用 errors.Unwrap 取出
 			return nil, fmt.Errorf("加载全局配置失败: %w", err)
 		}
 	}
 
-	// 3. 尝试加载项目级配置，存在的话覆盖全局配置的同名字段
-	// projectPath: 项目级配置文件的完整路径，如 "/path/to/project/.codebuddy/config.json"
-	projectPath := filepath.Join(projectDir, DefaultConfigDir, DefaultConfigFile)
-	if _, err := os.Stat(projectPath); err == nil {
-		// projectCfg: 从项目级配置文件解析出的配置，非零值字段将覆盖全局配置
-		projectCfg, err := loadFromFile(projectPath)
-		if err != nil {
-			return nil, fmt.Errorf("加载项目配置失败: %w", err)
+	// 3. 检测项目根，找到才加载项目级配置
+	if projectRoot := findProjectRoot("."); projectRoot != "" {
+		projectPath := filepath.Join(projectRoot, DefaultConfigDir, DefaultConfigFile)
+		if _, err := os.Stat(projectPath); err == nil {
+			projectCfg, err := loadFromFile(projectPath)
+			if err != nil {
+				return nil, fmt.Errorf("加载项目配置失败: %w", err)
+			}
+			mergeConfig(cfg, projectCfg)
 		}
-		mergeConfig(cfg, projectCfg)
 	}
 
-	// 4. 环境变量插值：把 "${OPENAI_API_KEY}" 替换成 os.Getenv("OPENAI_API_KEY") 的值
+	// 4. 环境变量插值
 	expandEnv(cfg)
 
 	return cfg, nil

@@ -122,3 +122,8 @@ func (t *WriteFileTool) Execute(ctx context.Context, args map[string]any) (*Tool
 func (t *WriteFileTool) IsDestructive() bool {
 	return true
 }
+
+// IsAvailable 基础工具始终可用（实现 Tool 接口）
+func (t *WriteFileTool) IsAvailable() bool {
+	return true
+}

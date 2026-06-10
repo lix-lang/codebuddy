@@ -1,6 +1,9 @@
 package tool
 
 import (
+	"fmt"
+	"sort"
+
 	"github.com/lix-lang/codebuddy/internal/llm"
 )
 
@@ -8,68 +11,144 @@ import (
 type registry struct {
 	// tools 用 map 存储所有注册的工具
 	// key 是工具名（如 "read_file"），value 是工具对象
-	// map 查找是 O(1) 复杂度，比遍历切片快
 	tools map[string]Tool
 }
 
 // NewRegistry 创建一个新的工具注册中心
-// 返回 ToolRegistry 接口类型，调用方只依赖接口，不依赖具体实现
 func NewRegistry() ToolRegistry {
-	// make(map[string]Tool) 创建一个空的 map，必须用 make 初始化，否则是 nil
 	return &registry{
 		tools: make(map[string]Tool),
 	}
 }
 
 // Register 注册一个工具
-// 实现 ToolRegistry 接口的方法
 func (r *registry) Register(t Tool) {
-	// map 查找的特殊语法：val, exists := m[key]
-	// val 是值，exists 是 bool（true = 存在，false = 不存在）
-	// 这里只关心是否存在，用 _ 忽略值
 	if _, exists := r.tools[t.Name()]; exists {
-		// 同名工具已存在，不覆盖，直接返回
-		return
+		return // 同名工具已存在，不覆盖
 	}
-	// t.Name() 调用工具的 Name() 方法获取工具名
-	// 不管 t 是 read_file 还是 search_code，都能调用 Name()
-	// 这就是接口的威力：调用方不需要知道具体类型
 	r.tools[t.Name()] = t
 }
 
 // Get 按名字查找工具
-// 实现 ToolRegistry 接口的方法
-// 返回 (工具对象, 是否找到)
 func (r *registry) Get(name string) (Tool, bool) {
-	// 从 map 里按 key 查找
 	t, exists := r.tools[name]
 	return t, exists
 }
 
 // List 返回所有已注册的工具
-// 实现 ToolRegistry 接口的方法
 func (r *registry) List() []Tool {
-	// make([]Tool, 0, len(r.tools)) 创建切片
-	// 第一个参数 0 是初始长度（空的）
-	// 第二个参数 len(r.tools) 是容量（预分配空间，避免多次扩容）
 	result := make([]Tool, 0, len(r.tools))
-	// for range 遍历 map，每次取出 key 和 value
-	// 这里只需要 value（工具对象），用 _ 忽略 key
 	for _, t := range r.tools {
-		// append 往切片末尾追加一个元素
 		result = append(result, t)
 	}
+	// 按名字排序，保证输出稳定
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Name() < result[j].Name()
+	})
 	return result
 }
 
-// GetToolDefinitions 把所有工具转成 LLM 能理解的 ToolDefinition 格式
+// ListNames 返回所有已注册工具的名字列表
+func (r *registry) ListNames() []string {
+	names := make([]string, 0, len(r.tools))
+	for name := range r.tools {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// ValidateParams 校验工具调用参数（Schema 校验 + 业务校验）
+func (r *registry) ValidateParams(name string, args map[string]any) error {
+	t, ok := r.tools[name]
+	if !ok {
+		return fmt.Errorf("工具 %s 不存在，可用工具: %v", name, r.ListNames())
+	}
+	// Schema 校验：检查必填参数是否存在
+	params := t.Parameters()
+	if props, ok := params["properties"].(map[string]any); ok {
+		if required, ok := params["required"].([]string); ok {
+			for _, req := range required {
+				if _, exists := args[req]; !exists {
+					return fmt.Errorf("缺少必填参数: %s", req)
+				}
+			}
+		}
+		// 类型检查
+		for key, val := range args {
+			if propDef, exists := props[key]; exists {
+				if propMap, ok := propDef.(map[string]any); ok {
+					if expectedType, ok := propMap["type"].(string); ok {
+						if err := checkParamType(key, val, expectedType); err != nil {
+							return err
+						}
+					}
+				}
+			}
+		}
+	}
+	// 业务校验：调用工具自己的 Validate
+	return t.Validate(args)
+}
+
+// checkParamType 检查参数值类型是否匹配 Schema 定义
+func checkParamType(key string, val any, expectedType string) error {
+	switch expectedType {
+	case "string":
+		if _, ok := val.(string); !ok {
+			return fmt.Errorf("参数 %s 必须是字符串", key)
+		}
+	case "integer":
+		switch val.(type) {
+		case int, int64, float64:
+			// JSON 数字默认解析为 float64，整数也算匹配
+		default:
+			return fmt.Errorf("参数 %s 必须是整数", key)
+		}
+	case "number":
+		switch val.(type) {
+		case int, int64, float64:
+		default:
+			return fmt.Errorf("参数 %s 必须是数字", key)
+		}
+	case "boolean":
+		if _, ok := val.(bool); !ok {
+			return fmt.Errorf("参数 %s 必须是布尔值", key)
+		}
+	}
+	return nil
+}
+
+// ToOpenAITools 返回所有可用工具的 OpenAI Function Calling 格式定义
+// 只返回 IsAvailable() == true 的工具（不可用的不发 LLM，省 token）
+func (r *registry) ToOpenAITools() []map[string]any {
+	tools := r.List()
+	defs := make([]map[string]any, 0, len(tools))
+	for _, t := range tools {
+		if !t.IsAvailable() {
+			continue // 不可用的工具跳过
+		}
+		defs = append(defs, map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name":        t.Name(),
+				"description": t.Description(),
+				"parameters":  t.Parameters(),
+			},
+		})
+	}
+	return defs
+}
+
+// GetToolDefinitions 把所有可用工具转成 llm.ToolDefinition 格式
 // Agent 调用 ChatStream 时，需要把工具定义传给 LLM
-// 这是个包级函数（不属于 registry），因为任何 ToolRegistry 实现都能用
 func GetToolDefinitions(r ToolRegistry) []llm.ToolDefinition {
 	tools := r.List()
-	// 预分配切片容量，性能优化
 	defs := make([]llm.ToolDefinition, 0, len(tools))
 	for _, t := range tools {
+		if !t.IsAvailable() {
+			continue
+		}
 		defs = append(defs, llm.ToolDefinition{
 			Type: "function",
 			Function: llm.ToolFunction{

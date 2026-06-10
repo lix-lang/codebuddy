@@ -142,3 +142,8 @@ func (t *EditFileTool) Execute(ctx context.Context, args map[string]any) (*ToolR
 func (t *EditFileTool) IsDestructive() bool {
 	return true
 }
+
+// IsAvailable 基础工具始终可用（实现 Tool 接口）
+func (t *EditFileTool) IsAvailable() bool {
+	return true
+}
