@@ -9,6 +9,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/lix-lang/codebuddy/internal/pubsub"
 )
@@ -67,13 +68,14 @@ type ChatModel struct {
 	mu        *sync.Mutex
 	lines     []string // 已完成的行
 	streamBuf string   // 流式接收中的内容（纯文本）
-	lastRole  string
 
 	lastRender time.Time
 	dirty      bool
 	modelName  string
 	width      int
 	height     int
+
+	renderer *glamour.TermRenderer
 }
 
 // NewChatModel 创建聊天区模型
@@ -81,12 +83,18 @@ func NewChatModel(width, height int, modelName string) *ChatModel {
 	vp := viewport.New(width, height)
 	vp.Style = lipgloss.NewStyle().PaddingLeft(1)
 
+	renderer, _ := glamour.NewTermRenderer(
+		glamour.WithAutoStyle(),
+		glamour.WithWordWrap(width-2),
+	)
+
 	c := &ChatModel{
 		vp:        vp,
 		width:     width,
 		height:    height,
 		mu:        &sync.Mutex{},
 		modelName: modelName,
+		renderer:  renderer,
 	}
 	// 欢迎屏作为 viewport 初始内容，用户发消息后自然被替换
 	c.vp.SetContent(c.buildWelcome())
@@ -99,6 +107,11 @@ func (c *ChatModel) SetSize(width, height int) {
 	c.height = height
 	c.vp.Width = width
 	c.vp.Height = height
+	// Re-create renderer with new width
+	c.renderer, _ = glamour.NewTermRenderer(
+		glamour.WithAutoStyle(),
+		glamour.WithWordWrap(width-2),
+	)
 }
 
 // HandleEvent 处理事件总线的事件
@@ -116,7 +129,6 @@ func (c *ChatModel) HandleEvent(e pubsub.Event) {
 		args := truncate(e.ToolArgs, 50)
 		line := toolLineStyle.Render(fmt.Sprintf("  ⎿ %s(%s)", e.ToolName, args))
 		c.lines = append(c.lines, line)
-		c.lastRole = "tool"
 		c.dirty = true
 
 	case pubsub.EventToolResult:
@@ -147,7 +159,6 @@ func (c *ChatModel) AddUserMessage(content string) {
 
 	line := userPromptStyle.Render("❯ ") + content
 	c.lines = append(c.lines, line)
-	c.lastRole = "user"
 	c.dirty = true
 }
 
@@ -187,19 +198,18 @@ func (c *ChatModel) Clear() {
 	defer c.mu.Unlock()
 	c.lines = nil
 	c.streamBuf = ""
-	c.lastRole = ""
 	c.dirty = false
 	c.vp.SetContent(c.buildWelcome())
 }
 
-// flushStream 把流式缓冲加入已完成行
+// flushStream 把流式缓冲加入已完成行（渲染 Markdown）
 func (c *ChatModel) flushStream() {
 	if c.streamBuf == "" {
 		return
 	}
-	c.lines = append(c.lines, c.streamBuf)
+	rendered := c.renderMarkdown(c.streamBuf)
+	c.lines = append(c.lines, rendered)
 	c.streamBuf = ""
-	c.lastRole = "assistant"
 }
 
 func (c *ChatModel) tryRender() {
@@ -232,14 +242,29 @@ func (c *ChatModel) doRender() {
 		}
 	}
 
-	// 流式内容直接追加纯文本
+	// 流式内容用 glamour 渲染 Markdown
 	if c.streamBuf != "" {
-		sb.WriteString(c.streamBuf)
+		rendered := c.renderMarkdown(c.streamBuf)
+		sb.WriteString(rendered)
 		sb.WriteString("▌")
 	}
 
 	c.vp.SetContent(sb.String())
 	c.vp.GotoBottom()
+}
+
+// renderMarkdown 用 glamour 渲染 Markdown 文本
+// 渲染失败时返回原文
+func (c *ChatModel) renderMarkdown(text string) string {
+	if c.renderer == nil {
+		return text
+	}
+	rendered, err := c.renderer.Render(text)
+	if err != nil {
+		return text
+	}
+	// glamour 会在末尾加换行，去掉
+	return strings.TrimRight(rendered, "\n")
 }
 
 // Update 处理 bubbletea 消息

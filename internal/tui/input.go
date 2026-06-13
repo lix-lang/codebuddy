@@ -14,16 +14,12 @@ import (
 // ================================================================
 
 var (
-	// 用 PromptStyle 而非 Render()，避免 ANSI 转义码干扰 textinput 光标
 	inputPromptStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("86")).
 				Bold(true)
 
 	inputHintStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("238"))
-
-	inputDisabledStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("238"))
 
 	inputBoxStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
@@ -97,11 +93,6 @@ func (im *InputModel) Reset() {
 // Focus 聚焦输入框
 func (im *InputModel) Focus() tea.Cmd {
 	return im.input.Focus()
-}
-
-// Blur 取消聚焦
-func (im *InputModel) Blur() {
-	im.input.Blur()
 }
 
 // IsMultiline 是否处于多行模式

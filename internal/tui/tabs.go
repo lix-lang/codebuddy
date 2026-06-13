@@ -1,9 +1,9 @@
 package tui
 
-// TabsModel 多标签页（占位，Phase 2 实现）
+// TabsModel 多标签页（占位）
 type TabsModel struct{}
 
-// NewTabsModel 创建多标签页
+// NewTabsModel 创建标签页模型
 func NewTabsModel() TabsModel {
 	return TabsModel{}
 }

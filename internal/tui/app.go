@@ -64,12 +64,9 @@ func isGarbageKey(msg tea.KeyMsg) bool {
 
 // Model bubbletea 主模型
 type Model struct {
-	chat    *ChatModel
-	input   InputModel
-	status  StatusBarModel
-	diff    DiffModel
-	palette CommandPaletteModel
-	tabs    TabsModel
+	chat   *ChatModel
+	input  InputModel
+	status StatusBarModel
 
 	agent *agent.DefaultAgent
 	cfg   config.Config
@@ -90,18 +87,15 @@ func NewModel(a *agent.DefaultAgent, cfg config.Config, eb *pubsub.EventBus) Mod
 	}
 
 	return Model{
-		chat:    NewChatModel(80, 18, cfg.LLM.Model),
-		input:   NewInputModel(80),
-		status:  NewStatusBarModel(StatusBarConfig{ModelName: cfg.LLM.Model, MaxSteps: maxSteps, MaxContext: 128000}, 80),
-		diff:    NewDiffModel(),
-		palette: NewCommandPaletteModel(),
-		tabs:    NewTabsModel(),
-		agent:   a,
-		cfg:     cfg,
-		eb:      eb,
-		state:   "idle",
-		width:   80,
-		height:  24,
+		chat:   NewChatModel(80, 18, cfg.LLM.Model),
+		input:  NewInputModel(80),
+		status: NewStatusBarModel(StatusBarConfig{ModelName: cfg.LLM.Model, MaxSteps: maxSteps, MaxContext: 128000}, 80),
+		agent:  a,
+		cfg:    cfg,
+		eb:     eb,
+		state:  "idle",
+		width:  80,
+		height: 24,
 	}
 }
 

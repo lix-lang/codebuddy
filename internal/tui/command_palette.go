@@ -1,9 +1,9 @@
 package tui
 
-// CommandPaletteModel 命令面板（占位，Phase 2 实现）
+// CommandPaletteModel 命令面板（占位，Ctrl+K 触发）
 type CommandPaletteModel struct{}
 
-// NewCommandPaletteModel 创建命令面板
+// NewCommandPaletteModel 创建命令面板模型
 func NewCommandPaletteModel() CommandPaletteModel {
 	return CommandPaletteModel{}
 }

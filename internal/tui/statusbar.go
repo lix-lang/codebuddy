@@ -24,8 +24,6 @@ var stateConfig = map[string]struct {
 	"thinking":   {"thinking", "214", true},
 	"executing":  {"working", "39", true},
 	"confirming": {"confirm?", "214", false},
-	"done":       {"", "243", false},
-	"error":      {"error", "196", false},
 }
 
 // StatusBarModel 状态栏子模型
